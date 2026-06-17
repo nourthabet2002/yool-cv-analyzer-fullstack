@@ -4,9 +4,7 @@ import "./App.css";
 const BACKEND_UPLOAD_URL = "http://localhost:5000/api/upload-cv";
 const BACKEND_LOGIN_URL = "http://localhost:5000/login";
 
-const OPENAI_API_KEY = process.env.REACT_APP_OPENAI_API_KEY;
-
-const MAX_FILES = 5;
+const MAX_FILES = 10;
 const MAX_SIZE_MB = 5;
 const MAX_SIZE = MAX_SIZE_MB * 1024 * 1024;
 
@@ -113,62 +111,266 @@ const normalizePayload = (payload, fileName = "") => {
   };
 };
 
-const generateProfileTitleWithLLM = async (cvData) => {
-  if (!OPENAI_API_KEY) {
+const inferProfileTitle = (cvData) => {
+  const source = [
+    cvData.skills.join(" "),
+    cvData.education,
+    cvData.summary,
+  ]
+    .join(" ")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+  const rules = [
+    [/react|javascript|typescript|frontend|front-end|html|css/, "Développeur Frontend"],
+    [/node|express|backend|back-end|api|spring|java|php|laravel/, "Développeur Backend"],
+    [/python|machine learning|deep learning|data science|pandas|tensorflow|pytorch/, "Data Scientist"],
+    [/data analyst|power bi|tableau|excel|sql|business intelligence/, "Data Analyst"],
+    [/graphisme|graphique|conception visuelle|direction artistique|identite visuelle|branding|illustrator|photoshop|indesign|affiche|print/, "Designer graphique"],
+    [/\bux\b|\bui\b|figma|wireframe|prototype|interface|design system/, "Designer UX/UI"],
+    [/marketing digital|communication|social media|community manager|reseaux sociaux|creation de contenu|contenu digital|campagne/, "Chargé de communication"],
+    [/finance|comptabilite|accounting|audit/, "Assistant Finance"],
+    [/ressources humaines|recrutement|hr|rh/, "Assistant RH"],
+  ];
+
+  const match = rules.find(([pattern]) => pattern.test(source));
+  return match ? match[1] : "Profil non classé";
+};
+
+const normalizeText = (value) =>
+  String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+const isUnclassifiedProfile = (title) => {
+  const normalized = normalizeText(cleanValue(title));
+  return !normalized || /profil\s+non\s+class/.test(normalized);
+};
+
+const JOB_STOPWORDS = new Set([
+  "avec",
+  "dans",
+  "pour",
+  "des",
+  "les",
+  "une",
+  "un",
+  "sur",
+  "par",
+  "and",
+  "the",
+  "for",
+  "with",
+  "job",
+  "poste",
+  "profil",
+  "candidate",
+  "candidat",
+  "experience",
+  "competence",
+  "competences",
+]);
+
+const extractJobKeywords = (criteriaText) => {
+  const normalized = normalizeText(criteriaText);
+  const knownPhrases = [
+    "machine learning",
+    "deep learning",
+    "data science",
+    "data analyst",
+    "power bi",
+    "business intelligence",
+    "computer vision",
+    "cloud computing",
+    "project management",
+    "node js",
+    "react js",
+  ];
+
+  const phraseMatches = knownPhrases.filter((phrase) =>
+    normalized.includes(phrase)
+  );
+  const tokens = normalized
+    .split(/[^a-z0-9+#.]+/)
+    .map((token) => token.trim())
+    .filter(
+      (token) =>
+        token.length >= 3 &&
+        !JOB_STOPWORDS.has(token) &&
+        !/^\d+$/.test(token)
+    );
+
+  return Array.from(new Set([...phraseMatches, ...tokens])).slice(0, 24);
+};
+
+const canonicalizeProfileTitle = (title) => {
+  const rawTitle = cleanValue(title || "Profil non classé");
+  const normalized = normalizeText(rawTitle);
+
+  if (isUnclassifiedProfile(rawTitle)) {
     return "Profil non classé";
   }
 
-  try {
-    const prompt = `
-À partir des informations extraites du CV, génère un titre professionnel court en français.
+  const classes = [
+    {
+      label: "Data Scientist",
+      pattern:
+        /data scientist|scientifique.*donnees|science.*donnees|data science|machine learning|deep learning/,
+    },
+    {
+      label: "Data Analyst",
+      pattern:
+        /data analyst|analyste.*donnees|analyse.*donnees|business intelligence|\bbi\b|power bi/,
+    },
+    {
+      label: "Ingénieur IA",
+      pattern:
+        /ingenieur.*ia|ingenieur.*intelligence artificielle|ai engineer|ml engineer|intelligence artificielle|\bia\b|\bai\b/,
+    },
+    {
+      label: "Ingénieur Cloud / DevOps",
+      pattern: /cloud|devops|infrastructure|kubernetes|docker|aws|azure|gcp/,
+    },
+    {
+      label: "Développeur Frontend",
+      pattern: /frontend|front-end|react|javascript|typescript|html|css/,
+    },
+    {
+      label: "Développeur Backend",
+      pattern: /backend|back-end|node|express|spring|java|php|laravel|api/,
+    },
+    {
+      label: "Designer UX/UI",
+      pattern: /ux|ui|designer ux|designer ui|figma|wireframe|prototype|interface|design system/,
+    },
+    {
+      label: "Designer graphique",
+      pattern:
+        /designer graphique|graphiste|graphisme|conception visuelle|direction artistique|identite visuelle|branding|illustrator|photoshop|indesign|affiche|print/,
+    },
+    {
+      label: "Chargé de communication",
+      pattern:
+        /charge.*communication|communication|marketing digital|community manager|social media|reseaux sociaux|creation de contenu|contenu digital|campagne/,
+    },
+  ];
 
-Règles:
-- Retourne uniquement le titre.
-- Maximum 4 mots.
-- Pas de phrase.
-- Pas d'explication.
-- Le titre doit être basé sur les compétences, les études et le résumé.
-- Exemples: "Développeur Python", "Data Scientist", "Designer UX/UI", "Enseignant Mathématiques", "Chargé de communication".
+  const match = classes.find((item) => item.pattern.test(normalized));
+  return match ? match.label : rawTitle;
+};
 
-Données CV:
-Nom: ${cvData.name}
-Compétences: ${cvData.skills.join(", ")}
-Études: ${cvData.education}
-Résumé: ${cvData.summary}
-`;
+const getProfileScore = (cvData, jobCriteria = "") => {
+  const text = normalizeText(
+    [
+      cvData.profileTitle,
+      cvData.skills.join(" "),
+      cvData.education,
+      cvData.summary,
+    ].join(" ")
+  );
 
-    const response = await fetch(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-          "HTTP-Referer": "http://localhost:3000",
-          "X-Title": "YOOL CV Analyzer",
-        },
-        body: JSON.stringify({
-          model: "openai/gpt-oss-120b",
-          temperature: 0,
-          messages: [{ role: "user", content: prompt }],
-        }),
-      }
-    );
+  const profileRules = [
+    {
+      label: "IA / Data",
+      profile: /\bia\b|\bai\b|\bdata\b|machine learning|deep learning|scientist/,
+      keywords:
+        /python|machine learning|deep learning|tensorflow|pytorch|scikit|pandas|numpy|nlp|llm|computer vision|data mining|classification|prediction|model/i,
+    },
+    {
+      label: "Cloud / DevOps",
+      profile: /cloud|devops|systeme|infrastructure/,
+      keywords:
+        /aws|azure|gcp|docker|kubernetes|terraform|linux|ci\/cd|jenkins|gitlab|cloud|devops|deployment|monitoring/i,
+    },
+    {
+      label: "Frontend",
+      profile: /frontend|front-end|react|web/,
+      keywords:
+        /react|javascript|typescript|html|css|redux|tailwind|bootstrap|frontend|front-end|responsive/i,
+    },
+    {
+      label: "Backend",
+      profile: /backend|back-end|api|java|node|php/,
+      keywords:
+        /node|express|spring|java|php|laravel|api|rest|mongodb|mysql|postgresql|backend|back-end/i,
+    },
+    {
+      label: "Data Analyst",
+      profile: /analyst|analyse|bi|business intelligence/,
+      keywords:
+        /power bi|tableau|excel|sql|dashboard|reporting|kpi|business intelligence|data analysis/i,
+    },
+    {
+      label: "Design graphique",
+      profile: /designer graphique|graphiste|graphisme|conception visuelle|direction artistique|identite visuelle|branding/,
+      keywords:
+        /graphisme|conception visuelle|direction artistique|identite visuelle|branding|illustrator|photoshop|indesign|affiche|print|adobe/i,
+    },
+    {
+      label: "UX/UI",
+      profile: /\bux\b|\bui\b|designer ux|designer ui|interface|design system/,
+      keywords: /figma|\bux\b|\bui\b|wireframe|prototype|interface|design system|responsive/i,
+    },
+    {
+      label: "Communication",
+      profile: /communication|marketing digital|community manager|social media|reseaux sociaux/,
+      keywords:
+        /communication|marketing digital|community manager|social media|reseaux sociaux|creation de contenu|campagne|contenu digital/i,
+    },
+  ];
 
-    const data = await response.json();
+  const activeRule =
+    profileRules.find((rule) => rule.profile.test(text)) ||
+    profileRules.find((rule) => rule.keywords.test(text));
 
-    if (!response.ok) {
-      console.error("OpenRouter error:", data);
-      return "Profil non classé";
-    }
+  const skillMatches = activeRule
+    ? cvData.skills.filter((skill) => activeRule.keywords.test(skill)).length
+    : 0;
+  const profileMatchScore = activeRule ? Math.min(skillMatches * 8, 32) : 0;
+  const skillRichnessScore = Math.min(cvData.skills.length, 12) * 3;
+  const projectExperienceScore =
+    Math.min(
+      (text.match(/projet|stage|experience|developpe|deploi|realise|application/g) ||
+        []).length,
+      5
+    ) * 5;
+  const educationScore =
+    /ingenieur|master|licence|bachelor|formation|universite|ecole/.test(text)
+      ? 12
+      : 0;
+  const completenessScore =
+    [cvData.name, cvData.email, cvData.phone, cvData.education, cvData.summary]
+      .filter(Boolean).length * 3;
+  const jobKeywords = extractJobKeywords(jobCriteria);
+  const jobMatches = jobKeywords.filter((keyword) => text.includes(keyword));
+  const jobMatchScore = Math.min(jobMatches.length * 10, 50);
 
-    return cleanValue(
-      data?.choices?.[0]?.message?.content || "Profil non classé"
-    );
-  } catch (err) {
-    console.error("LLM title error:", err);
-    return "Profil non classé";
+  const score =
+    jobMatchScore +
+    profileMatchScore +
+    skillRichnessScore +
+    projectExperienceScore +
+    educationScore +
+    completenessScore;
+
+  const reasons = [];
+
+  if (jobMatches.length > 0) reasons.push(`${jobMatches.length} critère(s) offre`);
+  if (jobKeywords.length > 0 && jobMatches.length === 0) {
+    reasons.push("Offre peu couverte");
   }
+  if (activeRule) reasons.push(`Profil ${activeRule.label}`);
+  if (skillMatches > 0) reasons.push(`${skillMatches} compétence(s) clé(s)`);
+  if (projectExperienceScore > 0) reasons.push("Projets/expérience");
+  if (educationScore > 0) reasons.push("Formation pertinente");
+  if (completenessScore >= 12) reasons.push("CV complet");
+
+  return {
+    score,
+    reasons: reasons.length > 0 ? reasons : ["Données limitées"],
+  };
 };
 
 function App() {
@@ -192,6 +394,8 @@ function App() {
   const [serverMessage, setServerMessage] = useState("");
   const [results, setResults] = useState([]);
   const [activeTab, setActiveTab] = useState(0);
+  const [selectedProfileFilter, setSelectedProfileFilter] = useState("all");
+  const [jobCriteria, setJobCriteria] = useState("");
 
   const isAuthenticated = Boolean(token);
 
@@ -203,6 +407,45 @@ function App() {
 
   const currentResult = results[activeTab] || emptyResult;
   const hasResults = results.length > 0;
+
+  const doneResults = useMemo(
+    () =>
+      results
+        .map((item, index) => ({ ...item, index }))
+        .filter((item) => item.status === "done"),
+    [results]
+  );
+
+  const profileOptions = useMemo(() => {
+    const counts = new Map();
+
+    doneResults.forEach((item) => {
+      const profile = item.profileTitle || "Profil non classé";
+      counts.set(profile, (counts.get(profile) || 0) + 1);
+    });
+
+    return Array.from(counts.entries())
+      .map(([profile, count]) => ({ profile, count }))
+      .sort((a, b) => a.profile.localeCompare(b.profile));
+  }, [doneResults]);
+
+  const rankedProfileResults = useMemo(() => {
+    const candidates =
+      selectedProfileFilter === "all"
+        ? doneResults
+        : doneResults.filter(
+            (item) =>
+              (item.profileTitle || "Profil non classé") ===
+              selectedProfileFilter
+          );
+
+    return candidates
+      .map((item) => ({
+        ...item,
+        ranking: getProfileScore(item, jobCriteria),
+      }))
+      .sort((a, b) => b.ranking.score - a.ranking.score || a.index - b.index);
+  }, [doneResults, selectedProfileFilter, jobCriteria]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -259,6 +502,7 @@ function App() {
     setConnectedUser(null);
     setSelectedFiles([]);
     setResults([]);
+    setSelectedProfileFilter("all");
     setServerMessage("");
     setError("Session fermée. Veuillez vous reconnecter pour analyser un CV.");
   };
@@ -270,6 +514,26 @@ function App() {
     setServerMessage("");
     setResults([]);
     setActiveTab(0);
+    setSelectedProfileFilter("all");
+  };
+
+  const handleProfileFilterChange = (profile) => {
+    setSelectedProfileFilter(profile);
+
+    if (profile === "all") {
+      setActiveTab(0);
+      return;
+    }
+
+    const firstMatch = results.findIndex(
+      (item) =>
+        item.status === "done" &&
+        (item.profileTitle || "Profil non classé") === profile
+    );
+
+    if (firstMatch !== -1) {
+      setActiveTab(firstMatch);
+    }
   };
 
   const handleSend = async () => {
@@ -300,6 +564,7 @@ function App() {
 
     setResults(initialTabs);
     setActiveTab(0);
+    setSelectedProfileFilter("all");
 
     let successCount = 0;
     let failedCount = 0;
@@ -338,13 +603,14 @@ function App() {
           throw new Error(getReadableError(payload, text, file.name));
         }
 
-        let normalized = normalizePayload(payload, file.name);
-
-        const profileTitle = await generateProfileTitleWithLLM(normalized);
-
-        normalized = {
-          ...normalized,
-          profileTitle,
+        const normalizedPayload = normalizePayload(payload, file.name);
+        const aiProfileTitle = cleanValue(payload?.profileTitle || "");
+        const profileTitle = isUnclassifiedProfile(aiProfileTitle)
+          ? inferProfileTitle(normalizedPayload)
+          : aiProfileTitle || inferProfileTitle(normalizedPayload);
+        const normalized = {
+          ...normalizedPayload,
+          profileTitle: canonicalizeProfileTitle(profileTitle),
         };
 
         setResults((prev) =>
@@ -565,6 +831,102 @@ function App() {
 
             {hasResults && (
               <>
+                {profileOptions.length > 0 && (
+                  <div className="profile-filter">
+                    <div className="profile-filter-header">
+                      <span>Filtrer par profil détecté</span>
+                      <small>{rankedProfileResults.length} CV affiché(s)</small>
+                    </div>
+
+                    <div className="job-criteria-box">
+                      <label htmlFor="job-criteria">Critères du poste</label>
+                      <textarea
+                        id="job-criteria"
+                        value={jobCriteria}
+                        onChange={(e) => setJobCriteria(e.target.value)}
+                        placeholder="Ex : Python, SQL, machine learning, NLP, Power BI..."
+                        rows="3"
+                      />
+                      <small>
+                        Optionnel : ces critères influencent le classement sans
+                        changer le profil détecté.
+                      </small>
+                    </div>
+
+                    <div className="profile-filter-list">
+                      <button
+                        type="button"
+                        className={`profile-filter-chip ${
+                          selectedProfileFilter === "all"
+                            ? "active-profile-chip"
+                            : ""
+                        }`}
+                        onClick={() => handleProfileFilterChange("all")}
+                      >
+                        Tous
+                        <span>{doneResults.length}</span>
+                      </button>
+
+                      {profileOptions.map(({ profile, count }) => (
+                        <button
+                          type="button"
+                          key={profile}
+                          className={`profile-filter-chip ${
+                            selectedProfileFilter === profile
+                              ? "active-profile-chip"
+                              : ""
+                          }`}
+                          onClick={() => handleProfileFilterChange(profile)}
+                        >
+                          {profile}
+                          <span>{count}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {selectedProfileFilter !== "all" &&
+                  rankedProfileResults.length > 0 && (
+                    <div className="ranking-panel">
+                      <div className="ranking-header">
+                        <strong>Classement</strong>
+                        <span>{selectedProfileFilter}</span>
+                      </div>
+
+                      <div className="ranking-list">
+                        {rankedProfileResults.map((item, rank) => (
+                          <button
+                            type="button"
+                            key={`${item.fileName}-${item.index}`}
+                            className={`ranking-item ${
+                              activeTab === item.index
+                                ? "active-ranking-item"
+                                : ""
+                            }`}
+                            onClick={() => setActiveTab(item.index)}
+                          >
+                            <span className="ranking-position">
+                              #{rank + 1}
+                            </span>
+                            <span className="ranking-candidate">
+                              <strong>{item.name || "Candidat sans nom"}</strong>
+                              <small>{item.fileName}</small>
+                              <span className="ranking-reasons">
+                                {item.ranking.reasons.map((reason) => (
+                                  <em key={reason}>{reason}</em>
+                                ))}
+                              </span>
+                            </span>
+                            <span className="ranking-score">
+                              {item.ranking.score} pts
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                 <div className="result-tabs">
                   {results.map((item, index) => (
                     <button

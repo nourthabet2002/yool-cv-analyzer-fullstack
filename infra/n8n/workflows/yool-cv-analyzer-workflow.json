@@ -1,0 +1,476 @@
+{
+  "name": "YOOL CV Analyzer - OCR Workflow",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1328,
+        -336
+      ],
+      "id": "fc2f3edf-7c9c-4f80-a4d6-89f9289dbd35",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "http://tika:9998/tika",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "text/plain"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/pdf"
+            },
+            {
+              "name": "X-Tika-PDFOcrStrategy",
+              "value": "ocr_and_text_extraction"
+            },
+            {
+              "name": "X-Tika-OCRLanguage",
+              "value": "eng+fra"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -800,
+        -160
+      ],
+      "id": "4e5801df-3c3a-4151-838c-6e177122d040",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const text = $json.data || \"\";\nconst fileName = $('Webhook').item.binary.data.fileName || \"unknown.pdf\";\n\nreturn {\n  extracted_text: text,\n  file_name: fileName\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        -320
+      ],
+      "id": "ddf54eb8-fe5c-49de-a0c5-ea5288c9ca75",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ \"Bearer \" + $env.OPENROUTER_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "openai/gpt-oss-120b"
+            },
+            {
+              "name": "messages",
+              "value": "={{\n[\n  {\n    role: \"user\",\n    content: `Extract information ONLY from the CV text.\n\nReturn ONLY valid JSON with this exact structure:\n\n{\n  \"name\": \"\",\n  \"email\": \"\",\n  \"phone\": \"\",\n  \"skills\": [],\n  \"education\": [],\n  \"summary\": \"\",\n  \"profileTitle\": \"\"\n}\n\nStrict extraction rules:\n- Use only the CV text provided.\n- Do not invent data.\n- Return ONLY JSON.\n- profileTitle must be chosen from this controlled list exactly:\n  \"Data Scientist\",\n  \"Data Analyst\",\n  \"Ing?nieur IA\",\n  \"Ing?nieur Cloud / DevOps\",\n  \"D?veloppeur Frontend\",\n  \"D?veloppeur Backend\",\n  \"Designer UX/UI\",\n  \"Designer graphique\",\n  \"Charg? de communication\",\n  \"Assistant Finance\",\n  \"Assistant RH\",\n  \"Profil non class?\".\n- Use \"Data Scientist\" for Data Scientist, Senior Data Scientist, Scientific Data, Scientifique de donn?es, Scientifique des donn?es, Machine Learning, Deep Learning, Pandas, TensorFlow, PyTorch.\n- Use \"Designer graphique\" for Graphiste, graphisme, conception visuelle, direction artistique, identit? visuelle, branding, Photoshop, Illustrator, InDesign, affiches or print design.\n- Use \"Designer UX/UI\" only when the CV mentions interface design, UX, UI, Figma, wireframes, prototypes or design systems.\n- Use \"Charg? de communication\" for communication, marketing digital, community management, social media, r?seaux sociaux, cr?ation de contenu or campaigns.\n- Use \"Profil non class?\" only when no class is supported by extracted CV evidence.\n\nCV file:\n${$json.file_name}\n\nCV TEXT:\n${$json.cv_short || $json.extracted_text}`\n  }\n]\n}}"
+            },
+            {
+              "name": "=temperature",
+              "value": "={{ 0 }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        160,
+        -192
+      ],
+      "id": "b1bf0de4-215d-4ef7-90c2-07a39d26b3a8",
+      "name": "HTTP Request1"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function normalizeText(value) {\n  return String(value || \"\")\n    .normalize(\"NFD\")\n    .replace(/[\\u0300-\\u036f]/g, \"\")\n    .toLowerCase();\n}\n\nfunction isUnclassifiedProfile(title) {\n  const normalized = normalizeText(title);\n  return !normalized || /profil\\s+non\\s+class/.test(normalized);\n}\n\nfunction inferProfileTitle(data) {\n  const source = normalizeText([\n    data.profileTitle,\n    Array.isArray(data.skills) ? data.skills.join(\" \") : data.skills,\n    data.education,\n    data.summary,\n  ].join(\" \"));\n\n  const rules = [\n    { label: \"Data Scientist\", pattern: /data scientist|scientifique.*donnees|science.*donnees|data science|machine learning|deep learning|python|pandas|tensorflow|pytorch|scikit/ },\n    { label: \"Data Analyst\", pattern: /data analyst|analyste.*donnees|analyse.*donnees|business intelligence|\\bbi\\b|power bi|tableau|dashboard|kpi|sql/ },\n    { label: \"Ing?nieur IA\", pattern: /ingenieur.*ia|ingenieur.*intelligence artificielle|ai engineer|ml engineer|intelligence artificielle|\\bia\\b|\\bai\\b/ },\n    { label: \"Ing?nieur Cloud / DevOps\", pattern: /cloud|devops|infrastructure|kubernetes|docker|aws|azure|gcp|terraform|ci\\/cd/ },\n    { label: \"D?veloppeur Frontend\", pattern: /frontend|front-end|react|javascript|typescript|html|css|redux|tailwind/ },\n    { label: \"D?veloppeur Backend\", pattern: /backend|back-end|node|express|spring|java|php|laravel|api|rest|mongodb|mysql|postgresql/ },\n    { label: \"Designer graphique\", pattern: /designer graphique|graphiste|graphisme|conception visuelle|direction artistique|identite visuelle|branding|illustrator|photoshop|indesign|affiche|print|adobe/ },\n    { label: \"Designer UX/UI\", pattern: /\\bux\\b|\\bui\\b|figma|wireframe|prototype|interface|design system|designer ux|designer ui/ },\n    { label: \"Charg? de communication\", pattern: /communication|marketing digital|community manager|social media|reseaux sociaux|creation de contenu|contenu digital|campagne/ },\n    { label: \"Assistant Finance\", pattern: /finance|comptabilite|accounting|audit|controle de gestion/ },\n    { label: \"Assistant RH\", pattern: /ressources humaines|recrutement|\\brh\\b|\\bhr\\b|paie/ },\n  ];\n\n  const match = rules.find((rule) => rule.pattern.test(source));\n  return match ? match.label : \"Profil non class?\";\n}\n\nfunction canonicalizeProfileTitle(title, data = {}) {\n  const rawTitle = String(title || \"Profil non class?\").trim();\n  const normalized = normalizeText(rawTitle);\n\n  if (isUnclassifiedProfile(rawTitle)) return inferProfileTitle(data);\n  if (/data scientist|scientifique.*donnees|science.*donnees|data science|machine learning|deep learning/.test(normalized)) return \"Data Scientist\";\n  if (/data analyst|analyste.*donnees|analyse.*donnees|business intelligence|\\bbi\\b|power bi/.test(normalized)) return \"Data Analyst\";\n  if (/ingenieur.*ia|ingenieur.*intelligence artificielle|ai engineer|ml engineer|intelligence artificielle|\\bia\\b|\\bai\\b/.test(normalized)) return \"Ing?nieur IA\";\n  if (/cloud|devops|infrastructure|kubernetes|docker|aws|azure|gcp/.test(normalized)) return \"Ing?nieur Cloud / DevOps\";\n  if (/frontend|front-end|react|javascript|typescript|html|css/.test(normalized)) return \"D?veloppeur Frontend\";\n  if (/backend|back-end|node|express|spring|java|php|laravel|api/.test(normalized)) return \"D?veloppeur Backend\";\n  if (/designer graphique|graphiste|graphisme|conception visuelle|direction artistique|identite visuelle|branding|illustrator|photoshop|indesign|affiche|print/.test(normalized)) return \"Designer graphique\";\n  if (/\\bux\\b|\\bui\\b|designer ux|designer ui|figma|wireframe|prototype|interface|design system/.test(normalized)) return \"Designer UX/UI\";\n  if (/charge.*communication|communication|marketing digital|community manager|social media|reseaux sociaux|creation de contenu|contenu digital|campagne/.test(normalized)) return \"Charg? de communication\";\n\n  return inferProfileTitle(data);\n}\n\nlet raw = ($json.choices?.[0]?.message?.content || \"\").trim();\nif (!raw) {\n  throw new Error(\"Empty response from HTTP Request1\");\n}\n\nraw = raw.replace(/```json/g, \"\").replace(/```/g, \"\").trim();\n\nconst start = raw.indexOf(\"{\");\nconst end = raw.lastIndexOf(\"}\");\n\nif (start === -1 || end === -1 || end <= start) {\n  throw new Error(\"No valid JSON found in response: \" + raw.slice(0, 200));\n}\n\nconst cleaned = raw.slice(start, end + 1);\n\nlet data;\n\ntry {\n  data = JSON.parse(cleaned);\n} catch (error) {\n  throw new Error(\"Invalid JSON format returned by AI\");\n}\n\nif (!data || typeof data !== \"object\" || Array.isArray(data)) {\n  throw new Error(\"Invalid JSON object\");\n}\n\nconst allowedFields = [\"name\", \"email\", \"phone\", \"skills\", \"education\", \"summary\", \"profileTitle\"];\n\nfor (const key of Object.keys(data)) {\n  if (!allowedFields.includes(key)) {\n    delete data[key];\n  }\n}\n\nif (typeof data.name !== \"string\") {\n  throw new Error(\"Invalid name\");\n}\n\nif (data.email && typeof data.email !== \"string\") {\n  throw new Error(\"Invalid email\");\n}\n\nif (data.email && !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(data.email)) {\n  throw new Error(\"Invalid email\");\n}\n\nif (data.phone && typeof data.phone !== \"string\") {\n  data.phone = String(data.phone);\n}\n\nif (!Array.isArray(data.skills)) {\n  throw new Error(\"Invalid skills\");\n}\n\nif (\n  data.education &&\n  typeof data.education !== \"string\" &&\n  !Array.isArray(data.education)\n) {\n  data.education = String(data.education);\n}\n\ndata.name = String(data.name || \"\").slice(0, 100);\ndata.email = String(data.email || \"\").slice(0, 150);\ndata.phone = String(data.phone || \"\").slice(0, 50);\ndata.summary = String(data.summary || \"\").slice(0, 2000);\ndata.profileTitle = canonicalizeProfileTitle(data.profileTitle, data);\n\ndata.skills = data.skills\n  .slice(0, 50)\n  .map((skill) => String(skill).slice(0, 100));\n\nif (Array.isArray(data.education)) {\n  data.education = data.education\n    .slice(0, 20)\n    .map((e) => {\n      if (typeof e === \"string\") return e.slice(0, 200);\n\n      if (typeof e === \"object\" && e !== null) {\n        return [e.degree, e.institution, e.university, e.year]\n          .filter(Boolean)\n          .map((v) => String(v).slice(0, 100))\n          .join(\" - \");\n      }\n\n      return \"\";\n    })\n    .filter(Boolean)\n    .join(\" | \");\n} else {\n  data.education = String(data.education || \"\").slice(0, 1000);\n}\n\nreturn {\n  timestamp: new Date().toISOString(),\n  file_name: $(\"cvshort\").item.json.file_name || \"\",\n  name: data.name,\n  email: data.email,\n  phone: \"'\" + data.phone.replace(/\\n/g, \" \").replace(/\\s+/g, \" \").trim(),\n  skills: data.skills.join(\", \"),\n  education: data.education,\n  summary: data.summary,\n  profileTitle: data.profileTitle,\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        496,
+        -176
+      ],
+      "id": "41d0014c-1f6d-481b-b774-051fdc9a9af7",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1qNKRGsoqrwWJXr6chB9udbFSsfmo24JR2ejtOMLIB1o",
+          "mode": "list",
+          "cachedResultName": "pdfexemple",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1qNKRGsoqrwWJXr6chB9udbFSsfmo24JR2ejtOMLIB1o/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1qNKRGsoqrwWJXr6chB9udbFSsfmo24JR2ejtOMLIB1o/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $json.timestamp }}",
+            "name": "={{ $json.name }}",
+            "email": "={{ $json.email }}",
+            "phone": "={{ $json.phone }}",
+            "skills": "={{ $json.skills }}",
+            "education": "={{ $json.education }}",
+            "summary": "={{ $json.summary }}",
+            "file_name": "={{$json.file_name}}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "file_name",
+              "displayName": "file_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "name",
+              "displayName": "name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "phone",
+              "displayName": "phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "skills",
+              "displayName": "skills",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "education",
+              "displayName": "education",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "summary",
+              "displayName": "summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        848,
+        32
+      ],
+      "id": "92fa1747-c818-4bc3-8db7-e1662999271e",
+      "name": "Append row in sheet",
+      "continueOnFail": true,
+      "notes": "Configure a Google Sheets credential after importing. This node is continueOnFail so local analysis can still return a result if Sheets is not configured.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const t = ($json.extracted_text || \"\").replace(/\\r/g, \"\");\n\nif (t.trim().length < 40) {\n  throw new Error(\"Texte insuffisant extrait du PDF. Le CV semble scanne ou compose d'images : une etape OCR est requise avant l'analyse IA.\");\n}\n\nconst lines = t.split(\"\\n\").map(l => l.trim()).filter(Boolean);\n\nconst head = lines.slice(0, 120);\n\nconst keywords =\n/(profil|comp[ée]tences?|skills?|formation|education|exp[ée]riences?|stage|projet|github|mail|email|t[ée]l|phone|\\+212|linkedin|langues?|logiciels?|informatique|outils?|technologies?|frameworks?|bureautique|certifications?|coordonn[ée]es?|contact)/i;\n\nconst important = lines.filter(l => keywords.test(l)).slice(0, 250);\n\nconst cv_short = [...head, \"-----\", ...important].join(\"\\n\").slice(0, 12000);\n\nreturn {\n  file_name: $json.file_name || \"\",\n  extracted_text: $json.extracted_text || \"\",\n  cv_short\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        -240
+      ],
+      "id": "bdc03b20-5291-4e19-b6e4-3445e43c3302",
+      "name": "cvshort"
+    },
+    {
+      "parameters": {
+        "chatId": "6744681425",
+        "text": "=?? New CV processed\n\n?? File: {{$json.file_name}}\n?? Name: {{$json.name}}\n?? Profile: {{$json.profileTitle}}\n?? Email: {{$json.email}}\n?? Phone: {{$json.phone}}\n\n?? Skills: {{$json.skills}}\n\n?? Education: {{$json.education}}\n\n?? Summary:\n{{$json.summary}}\n\n",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        688,
+        -288
+      ],
+      "id": "cc7b93f9-dc49-4c54-b68c-27470dca0de7",
+      "name": "Send a text message",
+      "webhookId": "c33d9443-3c5d-4824-97a9-399f57d7fd0f",
+      "continueOnFail": true,
+      "disabled": true,
+      "notes": "Disabled for local setup until Telegram credentials are created in this n8n instance. Re-enable after selecting a valid Telegram credential.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -480,
+        -160
+      ],
+      "id": "f3fccab2-c747-41d7-97c3-c519c4ccee7c",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "upload-cv",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -1392,
+        -16
+      ],
+      "id": "0808dc2c-2ab4-4f5f-906f-c6b7e5e4dcda",
+      "name": "Webhook",
+      "webhookId": "9a1bd0c4-c861-4ff0-b51e-dda8c532fd16"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"name\": \"={{$json.name}}\",\n  \"email\": \"={{$json.email}}\",\n  \"phone\": \"={{$json.phone}}\",\n  \"skills\": \"={{$json.skills}}\",\n  \"education\": \"={{$json.education}}\",\n  \"summary\": \"={{$json.summary}}\",\n  \"profileTitle\": \"={{$json.profileTitle}}\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        528,
+        96
+      ],
+      "id": "12176cae-36f9-4803-a297-77088056c5ec",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "const MAX_FILES = 10;\nconst MAX_FILE_SIZE_MB = 5;\nconst MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;\n\nif (items.length > MAX_FILES) {\n  throw new Error(`Nombre maximal de fichiers dépassé. Maximum autorisé : ${MAX_FILES}.`);\n}\n\nfor (let i = 0; i < items.length; i++) {\n  const item = items[i];\n  const binaryData = item.binary?.data;\n\n  if (!binaryData) {\n    throw new Error(\"Aucun fichier reçu.\");\n  }\n\n  const fileName = binaryData.fileName || \"\";\n  const mimeType = binaryData.mimeType || \"\";\n  let fileSize = binaryData.fileSize || 0;\n\n  if (!fileName.toLowerCase().endsWith(\".pdf\")) {\n    throw new Error(\"Le fichier doit avoir l'extension .pdf.\");\n  }\n\n  if (mimeType !== \"application/pdf\") {\n    throw new Error(\"Le fichier doit être un vrai PDF.\");\n  }\n\n  if (typeof fileSize === \"string\") {\n    const match = fileSize.match(/^([\\d.]+)\\s*(B|KB|MB|GB)?$/i);\n\n    if (!match) {\n      throw new Error(\"Impossible de lire la taille du fichier.\");\n    }\n\n    const value = parseFloat(match[1]);\n    const unit = (match[2] || \"B\").toUpperCase();\n\n    if (unit === \"KB\") fileSize = value * 1024;\n    else if (unit === \"MB\") fileSize = value * 1024 * 1024;\n    else if (unit === \"GB\") fileSize = value * 1024 * 1024 * 1024;\n    else fileSize = value;\n  }\n\n  if (Number.isNaN(fileSize)) {\n    throw new Error(\"Taille du fichier invalide.\");\n  }\n\n  if (fileSize === 0) {\n    throw new Error(\"Le fichier est vide.\");\n  }\n\n  if (fileSize > MAX_FILE_SIZE_BYTES) {\n    throw new Error(\n      `Le fichier dépasse la taille maximale autorisée de ${MAX_FILE_SIZE_MB} Mo.`\n    );\n  }\n\n  const buffer = await this.helpers.getBinaryDataBuffer(i, \"data\");\n  const firstBytes = buffer.subarray(0, 1024).toString(\"latin1\");\n\n  if (!firstBytes.includes(\"%PDF-\")) {\n    throw new Error(\"Le fichier n'est pas un vrai PDF valide.\");\n  }\n}\n\nreturn items;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1056,
+        -160
+      ],
+      "id": "d636a745-7d5c-4945-858d-1c965b3df599",
+      "name": "Validate uploaded file"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request1": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Append row in sheet",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send a text message",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "cvshort",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "cvshort": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send a text message": {
+      "main": [
+        []
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          },
+          {
+            "node": "Validate uploaded file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate uploaded file": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "3ce02b82-b004-48ec-a96e-1375b64a520c",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "435809113fb8ce1aef5815fcfb74527ae3bf96a8e2ea1a3185e92cdfba0a5916"
+  },
+  "id": "IYXBqsipsbMTsr2X",
+  "tags": []
+}

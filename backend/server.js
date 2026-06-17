@@ -8,10 +8,35 @@ const axios = require("axios");
 const FormData = require("form-data");
 
 const app = express();
-const upload = multer();
+const MAX_FILE_SIZE = 5 * 1024 * 1024;
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    files: 1,
+    fileSize: MAX_FILE_SIZE,
+  },
+  fileFilter: (req, file, cb) => {
+    if (
+      file.mimetype !== "application/pdf" ||
+      !file.originalname.toLowerCase().endsWith(".pdf")
+    ) {
+      return cb(new Error("Le fichier doit etre un PDF valide."));
+    }
+
+    cb(null, true);
+  },
+});
 
 app.use(cors());
 app.use(express.json());
+
+if (!process.env.JWT_SECRET) {
+  throw new Error("JWT_SECRET is required in backend/.env");
+}
+
+if (!process.env.N8N_WEBHOOK_URL) {
+  throw new Error("N8N_WEBHOOK_URL is required in backend/.env");
+}
 
 const USERS = [
   {
@@ -113,10 +138,37 @@ function verifyTokenMiddleware(req, res, next) {
   }
 }
 
+function validatePdfSignature(req, res, next) {
+  const file = req.file;
+
+  if (!file) {
+    return res.status(400).json({
+      message: "Aucun fichier recu.",
+    });
+  }
+
+  if (file.size === 0) {
+    return res.status(400).json({
+      message: "Le fichier est vide.",
+    });
+  }
+
+  const header = file.buffer.subarray(0, 1024).toString("latin1");
+
+  if (!header.includes("%PDF-")) {
+    return res.status(400).json({
+      message: "Le fichier n'est pas un vrai PDF valide.",
+    });
+  }
+
+  next();
+}
+
 app.post(
   "/api/upload-cv",
   verifyTokenMiddleware,
   upload.single("data"),
+  validatePdfSignature,
   async (req, res) => {
     try {
       if (!req.file) {
@@ -167,6 +219,25 @@ app.post(
     }
   }
 );
+
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    return res.status(400).json({
+      message:
+        err.code === "LIMIT_FILE_SIZE"
+          ? "Le fichier depasse la taille maximale de 5 Mo."
+          : err.message,
+    });
+  }
+
+  if (err) {
+    return res.status(400).json({
+      message: err.message || "Erreur de validation du fichier.",
+    });
+  }
+
+  next();
+});
 
 app.listen(process.env.PORT, () => {
   console.log(
