@@ -13,6 +13,7 @@ backend/.env
 build/
 dist/
 frontend/build/
+backend/exports/
 
 # Logs
 npm-debug.log*
@@ -25,3 +26,7 @@ Thumbs.db
 
 # VS Code
 .vscode/
+
+# Runtime data
+infra/n8n_data/
+infra/pg_data/

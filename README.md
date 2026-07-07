@@ -9,6 +9,7 @@ La solution combine :
 - workflow n8n ;
 - Apache Tika Full avec Tesseract OCR ;
 - OpenRouter LLM pour l'extraction structurée ;
+- PostgreSQL pour l'historisation interne des analyses ;
 - Google Sheets optionnel ;
 - Telegram optionnel.
 
@@ -24,6 +25,9 @@ La solution combine :
 - Filtres par profil.
 - Classement intra-profil avec score explicable.
 - Critères de poste optionnels pour influencer le classement.
+- Sauvegarde PostgreSQL non bloquante des CVs analysés.
+- Page administrateur pour visualiser les analyses stockées en base.
+- Export CSV des analyses PostgreSQL pour l'évaluation.
 
 ## Démarrage rapide
 

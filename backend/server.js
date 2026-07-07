@@ -2,10 +2,17 @@ require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
 const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const axios = require("axios");
 const FormData = require("form-data");
+const rateLimit = require("express-rate-limit");
+const {
+  initDatabase,
+  listCvAnalyses,
+  saveCvAnalysis,
+} = require("./db");
 
 const app = express();
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
@@ -27,8 +34,24 @@ const upload = multer({
   },
 });
 
-app.use(cors());
-app.use(express.json());
+const allowedOrigins = (process.env.CORS_ORIGIN || "http://localhost:3000")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+app.use(helmet());
+app.use(
+  cors({
+    origin(origin, cb) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        return cb(null, true);
+      }
+
+      return cb(new Error("Origine non autorisee par CORS."));
+    },
+  })
+);
+app.use(express.json({ limit: "1mb" }));
 
 if (!process.env.JWT_SECRET) {
   throw new Error("JWT_SECRET is required in backend/.env");
@@ -51,7 +74,29 @@ const USERS = [
   },
 ];
 
-app.post("/login", (req, res) => {
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    message: "Trop de tentatives de connexion. Reessayez plus tard.",
+  },
+});
+
+function requireRole(role) {
+  return (req, res, next) => {
+    if (req.user?.role !== role) {
+      return res.status(403).json({
+        message: "Acces reserve a l'administrateur.",
+      });
+    }
+
+    next();
+  };
+}
+
+app.post("/login", loginLimiter, (req, res) => {
   const { username, password } = req.body;
 
   const user = USERS.find(
@@ -197,6 +242,14 @@ app.post(
         }
       );
 
+      saveCvAnalysis({
+        fileName: req.file.originalname,
+        result: n8nResponse.data,
+        user: req.user,
+      }).catch((error) => {
+        console.warn("PostgreSQL persistence skipped:", error.message);
+      });
+
       return res
         .status(n8nResponse.status)
         .json(n8nResponse.data);
@@ -215,6 +268,23 @@ app.post(
 
       return res.status(status).json({
         message,
+      });
+    }
+  }
+);
+
+app.get(
+  "/api/analyses",
+  verifyTokenMiddleware,
+  requireRole("admin"),
+  async (req, res) => {
+    try {
+      const data = await listCvAnalyses(req.query.limit);
+      return res.json(data);
+    } catch (error) {
+      console.error("Analyses history error:", error);
+      return res.status(503).json({
+        message: "Historique PostgreSQL indisponible.",
       });
     }
   }
@@ -239,8 +309,16 @@ app.use((err, req, res, next) => {
   next();
 });
 
-app.listen(process.env.PORT, () => {
-  console.log(
-    `Backend JWT running on port ${process.env.PORT}`
-  );
-});
+if (require.main === module) {
+  app.listen(process.env.PORT, () => {
+    console.log(
+      `Backend JWT running on port ${process.env.PORT}`
+    );
+  });
+
+  initDatabase().catch((error) => {
+    console.warn("PostgreSQL persistence unavailable:", error.message);
+  });
+}
+
+module.exports = app;

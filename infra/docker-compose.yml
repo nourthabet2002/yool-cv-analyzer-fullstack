@@ -8,6 +8,8 @@ services:
       POSTGRES_USER: n8n
       POSTGRES_PASSWORD: n8npass
       POSTGRES_DB: n8n_demo
+    ports:
+      - "5433:5432"
     volumes:
       - ./pg_data:/var/lib/postgresql/data
     healthcheck:
@@ -25,6 +27,8 @@ services:
   n8n:
     image: n8nio/n8n:latest
     restart: unless-stopped
+    env_file:
+      - ../.env
 
     depends_on:
       postgres:
@@ -51,11 +55,13 @@ services:
       # Restrict filesystem access
       - N8N_RESTRICT_FILE_ACCESS_TO=/home/node/.n8n-files
 
+      # Allow workflow nodes to read environment variables (e.g. OPENROUTER_API_KEY)
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+
       - N8N_HOST=localhost
       - N8N_PORT=5678
       - N8N_PROTOCOL=http
       - WEBHOOK_URL=http://localhost:5679/
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
 
       # Database config
       - DB_TYPE=postgresdb

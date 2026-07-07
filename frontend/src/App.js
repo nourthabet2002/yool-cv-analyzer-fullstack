@@ -1,8 +1,12 @@
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import "./App.css";
 
-const BACKEND_UPLOAD_URL = "http://localhost:5000/api/upload-cv";
-const BACKEND_LOGIN_URL = "http://localhost:5000/login";
+const BACKEND_BASE_URL =
+  process.env.REACT_APP_BACKEND_URL || "http://localhost:5000";
+const BACKEND_UPLOAD_URL = `${BACKEND_BASE_URL}/api/upload-cv`;
+const BACKEND_LOGIN_URL = `${BACKEND_BASE_URL}/login`;
+const BACKEND_VERIFY_URL = `${BACKEND_BASE_URL}/verify`;
+const BACKEND_ANALYSES_URL = `${BACKEND_BASE_URL}/api/analyses`;
 
 const MAX_FILES = 10;
 const MAX_SIZE_MB = 5;
@@ -373,14 +377,34 @@ const getProfileScore = (cvData, jobCriteria = "") => {
   };
 };
 
+const readStoredUser = () => {
+  try {
+    const value = sessionStorage.getItem("jwt_user");
+    return value ? JSON.parse(value) : null;
+  } catch {
+    sessionStorage.removeItem("jwt_user");
+    return null;
+  }
+};
+
+const formatDateTime = (value) => {
+  if (!value) return "—";
+
+  try {
+    return new Intl.DateTimeFormat("fr-FR", {
+      dateStyle: "short",
+      timeStyle: "short",
+    }).format(new Date(value));
+  } catch {
+    return String(value);
+  }
+};
+
 function App() {
   const storedToken = sessionStorage.getItem("jwt_token");
-  const storedUser = sessionStorage.getItem("jwt_user");
 
   const [token, setToken] = useState(storedToken || "");
-  const [connectedUser, setConnectedUser] = useState(
-    storedUser ? JSON.parse(storedUser) : null
-  );
+  const [connectedUser, setConnectedUser] = useState(readStoredUser);
 
   const [showLogin, setShowLogin] = useState(false);
   const [loginUsername, setLoginUsername] = useState("");
@@ -396,8 +420,21 @@ function App() {
   const [activeTab, setActiveTab] = useState(0);
   const [selectedProfileFilter, setSelectedProfileFilter] = useState("all");
   const [jobCriteria, setJobCriteria] = useState("");
+  const [currentPage, setCurrentPage] = useState("main");
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [adminError, setAdminError] = useState("");
+  const [adminData, setAdminData] = useState({
+    analyses: [],
+    stats: {
+      total: 0,
+      profiles: 0,
+      latestAt: null,
+    },
+    profileBreakdown: [],
+  });
 
   const isAuthenticated = Boolean(token);
+  const isAdmin = connectedUser?.role === "admin";
 
   const fileLabel = useMemo(() => {
     if (selectedFiles.length === 0) return "Choisir un ou plusieurs fichiers";
@@ -447,6 +484,110 @@ function App() {
       .sort((a, b) => b.ranking.score - a.ranking.score || a.index - b.index);
   }, [doneResults, selectedProfileFilter, jobCriteria]);
 
+  const performLogout = (message = "") => {
+    sessionStorage.removeItem("jwt_token");
+    sessionStorage.removeItem("jwt_user");
+
+    setToken("");
+    setConnectedUser(null);
+    setSelectedFiles([]);
+    setResults([]);
+    setSelectedProfileFilter("all");
+    setCurrentPage("main");
+    setAdminData({
+      analyses: [],
+      stats: {
+        total: 0,
+        profiles: 0,
+        latestAt: null,
+      },
+      profileBreakdown: [],
+    });
+    setAdminError("");
+    setServerMessage("");
+    setError(message);
+  };
+
+  useEffect(() => {
+    if (!token) return;
+
+    let cancelled = false;
+
+    async function verifyStoredToken() {
+      try {
+        const response = await fetch(BACKEND_VERIFY_URL, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || !data.valid) {
+          throw new Error(data?.message || "Session expirée.");
+        }
+
+        if (!cancelled && data.user) {
+          setConnectedUser({
+            username: data.user.username,
+            role: data.user.role,
+          });
+        }
+      } catch {
+        if (!cancelled) {
+          performLogout("Session expirée. Veuillez vous reconnecter.");
+        }
+      }
+    }
+
+    verifyStoredToken();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  const loadAdminData = useCallback(async () => {
+    if (!isAdmin) return;
+
+    setAdminLoading(true);
+    setAdminError("");
+
+    try {
+      const response = await fetch(`${BACKEND_ANALYSES_URL}?limit=100`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload?.message || "Historique indisponible.");
+      }
+
+      setAdminData({
+        analyses: payload.analyses || [],
+        stats: payload.stats || {
+          total: 0,
+          profiles: 0,
+          latestAt: null,
+        },
+        profileBreakdown: payload.profileBreakdown || [],
+      });
+    } catch (err) {
+      setAdminError(err.message || "Impossible de charger l'historique.");
+    } finally {
+      setAdminLoading(false);
+    }
+  }, [isAdmin, token]);
+
+  useEffect(() => {
+    if (currentPage === "admin" && isAdmin) {
+      loadAdminData();
+    }
+  }, [currentPage, isAdmin, loadAdminData]);
+
   const handleLogin = async (e) => {
     e.preventDefault();
     setLoginError("");
@@ -489,22 +630,14 @@ function App() {
       setLoginPassword("");
       setError("");
       setServerMessage(`Connecté en tant que ${data.username} (${data.role}).`);
+      setCurrentPage("main");
     } catch (err) {
       setLoginError(err.message || "Erreur de connexion.");
     }
   };
 
   const handleLogout = () => {
-    sessionStorage.removeItem("jwt_token");
-    sessionStorage.removeItem("jwt_user");
-
-    setToken("");
-    setConnectedUser(null);
-    setSelectedFiles([]);
-    setResults([]);
-    setSelectedProfileFilter("all");
-    setServerMessage("");
-    setError("Session fermée. Veuillez vous reconnecter pour analyser un CV.");
+    performLogout("Session fermée. Veuillez vous reconnecter pour analyser un CV.");
   };
 
   const handleFileChange = (e) => {
@@ -718,10 +851,24 @@ function App() {
           </nav>
 
           {isAuthenticated ? (
-            <button className="login-btn" onClick={handleLogout}>
-              Déconnexion
-              {connectedUser?.role ? ` (${connectedUser.role})` : ""}
-            </button>
+            <div className="topbar-actions">
+              {isAdmin && (
+                <button
+                  className="admin-nav-btn"
+                  onClick={() =>
+                    setCurrentPage(currentPage === "admin" ? "main" : "admin")
+                  }
+                  type="button"
+                >
+                  {currentPage === "admin" ? "Accueil" : "Admin DB"}
+                </button>
+              )}
+
+              <button className="login-btn" onClick={handleLogout}>
+                Déconnexion
+                {connectedUser?.role ? ` (${connectedUser.role})` : ""}
+              </button>
+            </div>
           ) : (
             <button className="login-btn" onClick={() => setShowLogin(true)}>
               Connexion
@@ -730,6 +877,8 @@ function App() {
         </div>
       </header>
 
+      {currentPage === "main" ? (
+        <>
       <section className="hero">
         <div className="hero-overlay hero-overlay-1"></div>
         <div className="hero-overlay hero-overlay-2"></div>
@@ -1033,6 +1182,128 @@ function App() {
           </section>
         </div>
       </main>
+        </>
+      ) : (
+        <main className="main-section admin-page">
+          <div className="container admin-layout">
+            <section className="admin-header">
+              <div>
+                <h1>Administration PostgreSQL</h1>
+                <p>
+                  Vue interne des analyses sauvegardées en base de données.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                className="send-btn admin-refresh-btn"
+                onClick={loadAdminData}
+                disabled={adminLoading}
+              >
+                {adminLoading ? "Chargement..." : "Actualiser"}
+              </button>
+            </section>
+
+            {adminError && <p className="error-msg">{adminError}</p>}
+
+            <section className="admin-stats-grid">
+              <div className="admin-stat-card">
+                <span>Total analyses</span>
+                <strong>{adminData.stats.total}</strong>
+              </div>
+
+              <div className="admin-stat-card">
+                <span>Profils distincts</span>
+                <strong>{adminData.stats.profiles}</strong>
+              </div>
+
+              <div className="admin-stat-card">
+                <span>Dernière analyse</span>
+                <strong>{formatDateTime(adminData.stats.latestAt)}</strong>
+              </div>
+            </section>
+
+            <section className="admin-content-grid">
+              <div className="card admin-panel">
+                <h2>Répartition par profil</h2>
+
+                {adminData.profileBreakdown.length === 0 ? (
+                  <div className="empty-state">
+                    <p>Aucune donnée de profil disponible.</p>
+                  </div>
+                ) : (
+                  <div className="profile-bars">
+                    {adminData.profileBreakdown.map((item) => {
+                      const percent =
+                        adminData.stats.total > 0
+                          ? Math.round((item.count / adminData.stats.total) * 100)
+                          : 0;
+
+                      return (
+                        <div className="profile-bar-row" key={item.profile}>
+                          <div className="profile-bar-label">
+                            <span>{item.profile}</span>
+                            <strong>{item.count}</strong>
+                          </div>
+                          <div className="profile-bar-track">
+                            <div
+                              className="profile-bar-fill"
+                              style={{ width: `${percent}%` }}
+                            ></div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="card admin-panel admin-table-panel">
+                <h2>Historique des analyses</h2>
+
+                {adminLoading && (
+                  <div className="empty-state">
+                    <p>Chargement des données PostgreSQL...</p>
+                  </div>
+                )}
+
+                {!adminLoading && adminData.analyses.length === 0 && (
+                  <div className="empty-state">
+                    <p>Aucune analyse enregistrée pour le moment.</p>
+                  </div>
+                )}
+
+                {!adminLoading && adminData.analyses.length > 0 && (
+                  <div className="admin-table-wrap">
+                    <table className="admin-table">
+                      <thead>
+                        <tr>
+                          <th>Date</th>
+                          <th>Candidat</th>
+                          <th>Profil</th>
+                          <th>Email</th>
+                          <th>Fichier</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {adminData.analyses.map((item) => (
+                          <tr key={item.id}>
+                            <td>{formatDateTime(item.createdAt)}</td>
+                            <td>{item.candidateName || "Sans nom"}</td>
+                            <td>{item.profileTitle || "Profil non classé"}</td>
+                            <td>{item.email || "—"}</td>
+                            <td>{item.fileName || "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </section>
+          </div>
+        </main>
+      )}
     </div>
   );
 }

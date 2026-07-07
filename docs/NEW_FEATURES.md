@@ -6,6 +6,10 @@
 - Added JWT authentication before CV analysis.
 - Added `/login` and `/verify` routes.
 - Protected `/api/upload-cv` with JWT middleware.
+- Added frontend token verification on reload.
+- Added Helmet security headers.
+- Added stricter CORS configuration through `CORS_ORIGIN`.
+- Added basic rate limiting on `/login`.
 - Moved sensitive runtime values to backend `.env`.
 - Added backend validation before forwarding files to n8n:
   - `.pdf` extension;
@@ -111,3 +115,14 @@ $env:OPENROUTER_API_KEY="paste-your-openrouter-key-here"
 Google Sheets is optional and non-blocking for local testing.
 
 Telegram is optional and disabled until credentials are configured.
+
+## PostgreSQL persistence
+
+- Added backend-side PostgreSQL persistence in parallel with Google Sheets.
+- Successful n8n analysis responses are saved in the `cv_analyses` table.
+- The save operation is non-blocking: if PostgreSQL is unavailable, the frontend still receives the n8n result.
+- Stored fields include file name, candidate name, email, phone, profile title, skills, education, summary, uploader, role, raw JSON result and timestamp.
+- Docker exposes PostgreSQL on `localhost:5433` for the local backend.
+- Added `GET /api/analyses`, protected for `admin` users only.
+- Added an admin dashboard in React to visualize saved analyses.
+- Added `npm run export:analyses` to export PostgreSQL history as CSV for evaluation.
